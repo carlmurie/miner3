@@ -911,6 +911,10 @@ def cluster(expressionData,minNumberGenes = 6,minNumberOverExpSamples=4,maxSampl
 
     return bestHits
 
+
+## get .33 and .66 percentiles of gene expression across all subjects for each regulon
+## Assign -1,0,1 for each gene for each subject if gene expression is less than low, between low and high,
+## or greater than high.
 def backgroundDf(expressionData):
 
     low = np.percentile(expressionData,100./3,axis=0)
@@ -926,9 +930,14 @@ def backgroundDf(expressionData):
         bkgd.iloc[:,i][np.abs(bkgd.iloc[:,i])!=1]=0    
 
     return bkgd
-            
+        
+
+## For each regulon return membership values of under (0), middle (1), or 
+## over (2) expressed for each subject if number of genes in each bin are significant
 def assignMembership(geneset,background,p=0.05):
 
+    ## determine number of genes in each of 3 bins (under, middle, over) for 
+    ## each regulon across all subjects
     cluster = np.array(background.loc[geneset,:])
     classNeg1 = len(geneset)-np.count_nonzero(cluster+1,axis=0)
     class0 = len(geneset)-np.count_nonzero(cluster,axis=0)
@@ -938,6 +947,8 @@ def assignMembership(geneset,background,p=0.05):
     highpass = stats.binom.ppf(1-p/3.0,len(geneset),1./3)
     classes = []
     for i in range(len(observations)):
+        ## check if regulon genes in each bin are enough to pass significance 
+        ## threshold. check is 0,1,2 depending on which bins are significant
         check = np.where(np.array(observations[i])>=highpass)[0]
         if len(check)>1:
             check = np.array([np.argmax(np.array(observations[i]))])
@@ -965,6 +976,7 @@ def filterCoexpressionDict(coexpressionDict,clusterScores,threshold=0.01):
     keys = coexpressionDict.keys()
     filteredDict = {str(i):coexpressionDict[keys[i]] for i in range(len(coexpressionDict))}
     return filteredDict
+
 
 def biclusterMembershipDictionary(revisedClusters,background,label=2,p=0.05):
 
@@ -1522,12 +1534,16 @@ def generateInputForFIRM(revisedClusters,saveFile):
 # Functions used for inferring sample subtypes
 # =============================================================================
 
+## Calculate propotion of shared regulons for each pair of subjects. If proportion
+## is less than freqThreshold then set to zero
 def sampleCoincidenceMatrix(dict_,freqThreshold = 0.333,frequencies=False):
 
     keys = list(dict_.keys())
     lists = [dict_[key] for key in keys]
     samples = list(set(np.hstack(lists)))
     
+    ## for each subject, record each incidence of other subjects in the same reguolon
+    ## TODO implement this without the giant frequency_dictionary object
     frequency_dictionary = {name:[] for name in samples}
     for key in keys:
         hits = dict_[key]
@@ -1539,6 +1555,7 @@ def sampleCoincidenceMatrix(dict_,freqThreshold = 0.333,frequencies=False):
     fm.index = labels
     fm.columns = labels
     
+    ## for each pair of subjects calculate percentage of time
     for i in range(len(labels)):
         key = labels[i]
         tmp = frequency_dictionary[key]
@@ -1855,6 +1872,7 @@ def mosaic(dfr,clusterList,minClusterSize_x=4,minClusterSize_y=5,allow_singleton
     
     import sklearn
 
+    ## sorting_hat - normalised gene expression for each regulon for each state
     lowResolutionPrograms = [[] for i in range(len(clusterList))]
     sorting_hat = []
     for i in range(len(clusterList)):
@@ -2168,6 +2186,9 @@ def univariate_comparison(subtypes,srv,expressionData,network_activity_diff,n_it
         ordered_patients = [pat for pat in srv.index if pat in subtype]
 
         # Define high- and low-risk groups
+        ## high risk is 0:num_patients*.3
+        ## low risk group is num_patients*.3 to num_patients
+        ## high risk is top 30% risky patients, low risk is everybody else
         risk_groups = [ordered_patients[0:round(len(ordered_patients)*hr_prop)],
                        ordered_patients[round(len(ordered_patients)*(1-lr_prop)):]]
 
@@ -2188,6 +2209,8 @@ def univariate_comparison(subtypes,srv,expressionData,network_activity_diff,n_it
         names = np.hstack(risk_groups)
 
         # Bootstrap analysis using ROC AUC of individual features (gene expression) 
+        # select top 100 features by t-test between high/low risk. Calculate AUC by ordering 
+        ## expression or network activity and seeing if they are ordered low risk to high risk
         results_expression = univariate_predictor(x_expression,y,names,
                                             n_iter=n_iter,gene_labels=network_activity_diff.index)
 
@@ -2201,6 +2224,7 @@ def univariate_comparison(subtypes,srv,expressionData,network_activity_diff,n_it
         # Activity AUCs
         activity_aucs = np.array(results_activity["AUC"]).astype(float)
         
+        ##
         # Expression predictors
         prediction_df_exp = pd.DataFrame(np.vstack(Counter(list(results_expression.Gene)).most_common()))
         prediction_df_exp.columns = ["Gene","Frequency"]
@@ -2230,7 +2254,9 @@ def univariate_comparison(subtypes,srv,expressionData,network_activity_diff,n_it
             
     boxplot_dataframe = pd.DataFrame(np.vstack(rows))
     boxplot_dataframe.columns = ["Subtype", "Method", "AUC"]
-    boxplot_dataframe.loc[:,"AUC"] = boxplot_dataframe.loc[:,"AUC"].convert_objects(convert_numeric=True)
+    
+    ## convert_objects is deprecated, changed to pd.to_numeric
+    boxplot_dataframe.loc[:,"AUC"] = pd.to_numeric(boxplot_dataframe.loc[:,"AUC"])
     
     sns.set(font_scale=1.5,style="whitegrid")
     fig = plt.figure(figsize=(16,4))
@@ -3673,11 +3699,13 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
     ps_1 = []
     index_1 = []
     
+    ## correlate each regulat's expression with regulon PC1 expression
     missing_tfs = list(set(regulon_df_bcindex.loc[:,"Regulator"])-set(expression_matrix.index))
     for key in list(set(regulon_df_bcindex.index)):
-        e_gene = reference_matrix.loc[str(key),:]
+        e_gene = reference_matrix.loc[str(key),:]   ## PC1 for this regulon across all subjects
         tf = list(regulon_df_bcindex.loc[key,"Regulator"])[0]
         if tf not in missing_tfs:
+            ## correlate tf expression with regulon PC1 expression
             tf_exp = expression_matrix.loc[tf,reference_matrix.columns]
             r, p = stats.spearmanr(tf_exp, e_gene)
         else:
@@ -3705,6 +3733,8 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
         phenotype_2 = list(set(phenotype_2)&set(reference_matrix.columns))
         phenotype_1 = list(set(phenotype_1)&set(reference_matrix.columns))
         
+        ## apply t-test on regulon PC1 between subjects with and without mutation
+        ## TODO - apply FDR correction
         regulon_ttests = pd.DataFrame(
             np.vstack(
                 stats.ttest_ind(reference_matrix.loc[:,phenotype_2],reference_matrix.loc[:,phenotype_1],equal_var=False,axis=1)
@@ -3718,6 +3748,7 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
         mean_ts = []
         mean_significance = []
 
+        ## all regulators (tfs) that are not contained in regulation targets
         upstream_regulators = list(set(regulon_matrix.Regulator)-set(regulon_df_gene_index.index))
         for regulator_ in list(set(regulon_matrix.Regulator)&set(regulon_df_gene_index.index)): # analyze all regulators in regulon_matrix
 
@@ -3731,6 +3762,7 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
                 neglogps = []
                 ts = []
 
+                ## get t-test results of this regulator for all regulons it is associated with
                 for regulon_ in regulons_:
                     t, p = list(regulon_ttests.loc[regulon_,:])
                     tmp_neglogp = -np.log10(p)
@@ -3745,6 +3777,7 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
                 mean_ts = xt
                 mean_significance = -np.log10(xp)
 
+            ## If mean p-value shows significance store regulons it is associated with
             if mean_significance >= -np.log10(significance_threshold):
                 downstream_tmp = correlation_df_regulator_index.loc[regulator_,"Regulon_ID"]
                 if type(downstream_tmp) is not pd.core.series.Series:
@@ -3766,6 +3799,7 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
                 d_neglogps = np.array(d_neglogps)
                 d_ts = np.array(d_ts)
 
+                ## get all individual significant regulons
                 mask = np.where(d_neglogps >= -np.log10(significance_threshold))[0]
                 if len(mask) == 0:
                     continue
@@ -5551,6 +5585,12 @@ def chiSquareTest(risk_status,membership_array):
         ps.append(p)
     return ps
 
+
+## For each gene and for each subject - calculate mean network activity (over/under expressed) of all regulons that this gene
+## is a member of. The genes are those genes that are tied to a specific regulator (TF). Network activity
+## is defined as 1 if regulon is activated (0ver/under expressed) or 0 if not activated. Mean network 
+## activity is between 0 and 1 and indicates strenght of activity of all regulons for this gene and one
+## subject
 def networkActivity(reference_matrix,regulon_matrix,minRegulons = 2):
     
     reference_columns = reference_matrix.columns
@@ -5562,6 +5602,8 @@ def networkActivity(reference_matrix,regulon_matrix,minRegulons = 2):
     for gene in reference_regulonDf.Gene.unique():
         regulon_list = np.array(reference_regulonDf[reference_regulonDf.Gene==gene]["Regulon_ID"])
         if len(regulon_list) >= minRegulons:
+            ## for regulons containing this gene: mean of network activity across all regulons for
+            ## each subject
             activity = list(reference_matrix.loc[regulon_list.astype(str),:].mean(axis=0))
             genes.append(gene)
             activities.append(activity)
